@@ -3,17 +3,40 @@
 //! Pick a function on the left, see which keys run it, then click the
 //! "New key" box, press a key and click Assign. Conflicts and keys Windows
 //! itself uses are flagged before anything changes. Nothing is saved until OK.
+//!
+//! The preset box lists the built-in presets and the user's own saved ones.
+//! "Save as..." stores the current keys under a name; "Delete" removes a
+//! saved preset (built-ins can't be deleted).
 
 use std::cell::{Cell, RefCell};
 
-use tn3270_keymap::{Action, KeyChord, Keymap, Preset};
+use tn3270_keymap::{Action, KeyChord, Keymap, Preset, SavedKeymaps};
 
-use crate::capture;
 use crate::win32::*;
+use crate::{capture, prompt, settings};
 
 const CLASS: &str = "Tn3270KeyboardSetup";
 const IDC_PRESET: i32 = 1001;
 const IDC_LOAD_PRESET: i32 = 1002;
+const IDC_SAVE_AS: i32 = 1009;
+const IDC_DELETE_PRESET: i32 = 1010;
+const CBN_SELCHANGE: u16 = 1;
+
+/// An entry in the preset box.
+#[derive(Clone, PartialEq)]
+enum Choice {
+    BuiltIn(Preset),
+    Saved(String),
+}
+
+impl Choice {
+    fn label(&self) -> String {
+        match self {
+            Choice::BuiltIn(p) => p.label().to_string(),
+            Choice::Saved(name) => name.clone(),
+        }
+    }
+}
 const IDC_LIST: i32 = 1003;
 const IDC_KEYS: i32 = 1004;
 const IDC_REMOVE: i32 = 1005;
@@ -30,6 +53,9 @@ struct State {
     capture: HWND,
     conflict: HWND,
     preset_cb: HWND,
+    delete_btn: HWND,
+    choices: Vec<Choice>,
+    store: SavedKeymaps,
     keymap: Keymap,
     actions: Vec<Action>,
     selected: usize,
@@ -115,15 +141,12 @@ unsafe fn build(dlg: HWND, owner: HWND, keymap: Keymap) {
         child(dlg, "BUTTON", text, WS_TABSTOP | extra, 0, rect, id, font)
     };
 
-    label("Start from &preset:", (12, 15, 110, 20));
+    label("&Preset:", (12, 15, 60, 20));
     let preset_cb = child(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 0,
-        (124, 11, 230, 200), IDC_PRESET, font);
-    for p in Preset::ALL {
-        SendMessageW(preset_cb, CB_ADDSTRING, 0, wide(p.label()).as_ptr() as LPARAM);
-    }
-    let current = Preset::ALL.iter().position(|p| p.label() == keymap.name).unwrap_or(0);
-    SendMessageW(preset_cb, CB_SETCURSEL, current, 0);
-    button("&Load preset", (362, 10, 100, 25), IDC_LOAD_PRESET, BS_PUSHBUTTON);
+        (72, 11, 260, 240), IDC_PRESET, font);
+    button("&Load", (340, 10, 70, 25), IDC_LOAD_PRESET, BS_PUSHBUTTON);
+    button("&Save as...", (416, 10, 84, 25), IDC_SAVE_AS, BS_PUSHBUTTON);
+    let delete_btn = button("&Delete", (506, 10, 70, 25), IDC_DELETE_PRESET, BS_PUSHBUTTON);
 
     label("&Functions:", (12, 48, 200, 18));
     let list = child(dlg, "SysListView32", "",
@@ -160,11 +183,14 @@ unsafe fn build(dlg: HWND, owner: HWND, keymap: Keymap) {
 
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
-            owner, list, keys_lb, capture, conflict, preset_cb, keymap,
+            owner, list, keys_lb, capture, conflict, preset_cb, delete_btn,
+            choices: Vec::new(), store: settings::saved_keymaps(), keymap,
             actions: Action::all_bindable(), selected: 0, keys_shown: Vec::new(),
         });
     });
     with_state(|st| {
+        let current = st.keymap.name.clone();
+        fill_presets(st, &current);
         fill_list(st);
         select(st, 0);
         show_conflict(st);
@@ -282,7 +308,7 @@ fn on_assign(dlg: HWND) {
     }
     with_state(|st| {
         st.keymap.assign(chord, target);
-        st.keymap.name = "Custom".into();
+        mark_edited(st);
         if let Some(old) = existing {
             if let Some(row) = st.actions.iter().position(|a| *a == old) {
                 refresh_row(st, row);
@@ -299,7 +325,7 @@ fn on_remove() {
         let i = SendMessageW(st.keys_lb, LB_GETCURSEL, 0, 0);
         if let Some(chord) = usize::try_from(i).ok().and_then(|i| st.keys_shown.get(i)).copied() {
             st.keymap.remove(&chord);
-            st.keymap.name = "Custom".into();
+            mark_edited(st);
             refresh_row(st, st.selected);
             show_keys(st);
             show_conflict(st);
@@ -307,19 +333,120 @@ fn on_remove() {
     });
 }
 
+/// After an edit, a built-in preset's name no longer describes the keys.
+/// A saved preset keeps its name, so "Save as..." offers to update it.
+fn mark_edited(st: &mut State) {
+    if Preset::ALL.iter().any(|p| p.label() == st.keymap.name) {
+        st.keymap.name = "Custom".into();
+    }
+}
+
+/// Fill the preset box (built-ins, then saved presets A-Z) and select `name`.
+fn fill_presets(st: &mut State, name: &str) {
+    st.choices = Preset::ALL.iter().map(|p| Choice::BuiltIn(*p))
+        .chain(st.store.list().into_iter().map(Choice::Saved))
+        .collect();
+    let sel = st.choices.iter().position(|c| c.label().eq_ignore_ascii_case(name)).unwrap_or(0);
+    unsafe {
+        SendMessageW(st.preset_cb, CB_RESETCONTENT, 0, 0);
+        for c in &st.choices {
+            SendMessageW(st.preset_cb, CB_ADDSTRING, 0, wide(&c.label()).as_ptr() as LPARAM);
+        }
+        SendMessageW(st.preset_cb, CB_SETCURSEL, sel, 0);
+    }
+    update_delete_button(st);
+}
+
+fn chosen(st: &State) -> Option<Choice> {
+    let i = unsafe { SendMessageW(st.preset_cb, CB_GETCURSEL, 0, 0) };
+    usize::try_from(i).ok().and_then(|i| st.choices.get(i)).cloned()
+}
+
+fn update_delete_button(st: &State) {
+    let saved = matches!(chosen(st), Some(Choice::Saved(_)));
+    unsafe { EnableWindow(st.delete_btn, saved as BOOL) };
+}
+
 fn on_load_preset(dlg: HWND) {
-    let Some(i) = with_state(|st| unsafe { SendMessageW(st.preset_cb, CB_GETCURSEL, 0, 0) }) else { return };
-    let Some(preset) = usize::try_from(i).ok().and_then(|i| Preset::ALL.get(i)).copied() else { return };
-    let q = format!("Replace all key assignments with the \u{201C}{}\u{201D} preset?", preset.label());
+    let Some(Some(choice)) = with_state(|st| chosen(st)) else { return };
+    let q = format!("Replace all key assignments with the \u{201C}{}\u{201D} preset?", choice.label());
     if message_box(dlg, &q, "Keyboard Setup", MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
+    let loaded = match &choice {
+        Choice::BuiltIn(p) => Ok(Keymap::preset(*p)),
+        Choice::Saved(name) => settings::saved_keymaps().load(name),
+    };
+    match loaded {
+        Ok(km) => {
+            with_state(|st| {
+                st.keymap = km;
+                let row = st.selected;
+                fill_list(st);
+                select(st, row);
+                show_conflict(st);
+            });
+        }
+        Err(e) => {
+            message_box(dlg, &format!("The preset could not be loaded:\n{e}"), "Keyboard Setup",
+                MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
+fn on_save_as(dlg: HWND) {
+    let Some(current) = with_state(|st| st.keymap.name.clone()) else { return };
+    let mut suggestion = if SavedKeymaps::check_name(&current).is_ok() { current } else { String::new() };
+    loop {
+        let Some(name) = prompt::ask(dlg, "Save Preset", "Save the current keys as a preset named:",
+            &suggestion, tn3270_keymap::MAX_PRESET_NAME_LEN) else { return };
+        if let Err(why) = SavedKeymaps::check_name(&name) {
+            message_box(dlg, &why, "Save Preset", MB_OK | MB_ICONWARNING);
+            suggestion = name;
+            continue;
+        }
+        let store = settings::saved_keymaps();
+        if store.exists(&name) {
+            let q = format!("A preset named \u{201C}{name}\u{201D} already exists.\n\nReplace it?");
+            if message_box(dlg, &q, "Save Preset", MB_YESNO | MB_ICONQUESTION) != IDYES {
+                suggestion = name;
+                continue;
+            }
+        }
+        let Some(mut km) = with_state(|st| st.keymap.clone()) else { return };
+        km.name = name.clone();
+        match store.save(&km) {
+            Ok(_) => {
+                with_state(|st| {
+                    st.keymap.name = name.clone();
+                    fill_presets(st, &name);
+                });
+            }
+            Err(e) => {
+                message_box(dlg, &format!("The preset could not be saved:\n{e}"), "Save Preset",
+                    MB_OK | MB_ICONERROR);
+            }
+        }
+        return;
+    }
+}
+
+fn on_delete_preset(dlg: HWND) {
+    let Some(Some(Choice::Saved(name))) = with_state(|st| chosen(st)) else { return };
+    let q = format!("Delete the saved preset \u{201C}{name}\u{201D}?\n\nThe keys currently in this dialog are not changed.");
+    if message_box(dlg, &q, "Keyboard Setup", MB_YESNO | MB_ICONWARNING) != IDYES {
+        return;
+    }
+    if let Err(e) = settings::saved_keymaps().delete(&name) {
+        message_box(dlg, &format!("The preset could not be deleted:\n{e}"), "Keyboard Setup",
+            MB_OK | MB_ICONERROR);
+        return;
+    }
     with_state(|st| {
-        st.keymap = Keymap::preset(preset);
-        let row = st.selected;
-        fill_list(st);
-        select(st, row);
-        show_conflict(st);
+        if st.keymap.name.eq_ignore_ascii_case(&name) {
+            st.keymap.name = "Custom".into();
+        }
+        fill_presets(st, "");
     });
 }
 
@@ -350,6 +477,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 (IDC_ASSIGN, BN_CLICKED) => on_assign(hwnd),
                 (IDC_REMOVE, BN_CLICKED) => on_remove(),
                 (IDC_LOAD_PRESET, BN_CLICKED) => on_load_preset(hwnd),
+                (IDC_SAVE_AS, BN_CLICKED) => on_save_as(hwnd),
+                (IDC_DELETE_PRESET, BN_CLICKED) => on_delete_preset(hwnd),
+                (IDC_PRESET, CBN_SELCHANGE) => {
+                    with_state(|st| update_delete_button(st));
+                }
                 (IDC_CAPTURE, capture::CN_CAPTURED) => {
                     with_state(|st| show_conflict(st));
                 }

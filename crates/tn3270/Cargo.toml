@@ -1,0 +1,8 @@
+[package]
+name = "tn3270"
+description = "TN3270/TN3270E protocol engine: Telnet negotiation, 3270 data stream, screen buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 tn3270-keymap = { path = "../crates/keymap" }
+tn3270 = { path = "../crates/tn3270" }

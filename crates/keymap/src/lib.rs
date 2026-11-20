@@ -16,8 +16,10 @@ mod action;
 mod dispatch;
 mod key;
 mod keymap;
+mod store;
 
 pub use action::{Action, Category};
+pub use store::{safe_file_stem, SavedKeymaps, MAX_NAME_LEN as MAX_PRESET_NAME_LEN};
 pub use dispatch::KeyDispatcher;
 pub use key::{vk, KeyChord, Mods};
 pub use keymap::{Keymap, ParseError, Preset};

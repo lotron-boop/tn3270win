@@ -193,6 +193,16 @@ pub const WM_COMMAND: u32 = 0x0111;
 pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_ACTIVATE: u32 = 0x0006;
+pub const WM_SIZE: u32 = 0x0005;
+pub const WM_INITMENUPOPUP: u32 = 0x0117;
+pub const WM_APP: u32 = 0x8000;
+pub const ES_NUMBER: u32 = 0x2000;
+pub const SRCCOPY: u32 = 0x00CC_0020;
+pub const CF_UNICODETEXT: u32 = 13;
+pub const GMEM_MOVEABLE: u32 = 0x0002;
+pub const MF_BYCOMMAND: u32 = 0x0000;
+pub const MF_ENABLED: u32 = 0x0000;
+pub const MB_BEEP: u32 = 0xFFFF_FFFF;
 pub const DLGC_WANTALLKEYS: LRESULT = 0x0004;
 pub const DLGC_WANTCHARS: LRESULT = 0x0080;
 
@@ -200,7 +210,11 @@ pub const LB_ADDSTRING: u32 = 0x0180;
 pub const LB_RESETCONTENT: u32 = 0x0184;
 pub const LB_SETCURSEL: u32 = 0x0186;
 pub const LB_GETCURSEL: u32 = 0x0188;
+pub const EM_SETSEL: u32 = 0x00B1;
+pub const EM_LIMITTEXT: u32 = 0x00C5;
+pub const ES_AUTOHSCROLL: u32 = 0x0080;
 pub const CB_ADDSTRING: u32 = 0x0143;
+pub const CB_RESETCONTENT: u32 = 0x014B;
 pub const CB_GETCURSEL: u32 = 0x0147;
 pub const CB_SETCURSEL: u32 = 0x014E;
 pub const BN_CLICKED: u16 = 0;
@@ -298,8 +312,21 @@ extern "system" {
     pub fn MessageBoxW(hwnd: HWND, text: *const u16, caption: *const u16, kind: u32) -> i32;
     pub fn LoadCursorW(instance: HINSTANCE, name: *const u16) -> HCURSOR;
     pub fn SetWindowTextW(hwnd: HWND, text: *const u16) -> BOOL;
+    pub fn GetWindowTextW(hwnd: HWND, buf: *mut u16, max: i32) -> i32;
+    pub fn GetWindowTextLengthW(hwnd: HWND) -> i32;
     pub fn GetSysColor(index: i32) -> u32;
     pub fn GetSysColorBrush(index: i32) -> HBRUSH;
+    pub fn PostMessageW(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> BOOL;
+    pub fn GetDC(hwnd: HWND) -> HDC;
+    pub fn ReleaseDC(hwnd: HWND, hdc: HDC) -> i32;
+    pub fn InvertRect(hdc: HDC, rect: *const RECT) -> BOOL;
+    pub fn MessageBeep(kind: u32) -> BOOL;
+    pub fn EnableMenuItem(menu: HMENU, id: u32, flags: u32) -> BOOL;
+    pub fn OpenClipboard(owner: HWND) -> BOOL;
+    pub fn CloseClipboard() -> BOOL;
+    pub fn EmptyClipboard() -> BOOL;
+    pub fn SetClipboardData(format: u32, mem: HANDLE) -> HANDLE;
+    pub fn GetClipboardData(format: u32) -> HANDLE;
 }
 
 #[cfg_attr(windows, link(name = "gdi32"))]
@@ -317,11 +344,19 @@ extern "system" {
     pub fn TextOutW(hdc: HDC, x: i32, y: i32, text: *const u16, len: i32) -> BOOL;
     pub fn GetTextExtentPoint32W(hdc: HDC, text: *const u16, len: i32, size: *mut SIZE) -> BOOL;
     pub fn CreateSolidBrush(color: u32) -> HBRUSH;
+    pub fn CreateCompatibleDC(hdc: HDC) -> HDC;
+    pub fn CreateCompatibleBitmap(hdc: HDC, w: i32, h: i32) -> HANDLE;
+    pub fn BitBlt(dst: HDC, x: i32, y: i32, w: i32, h: i32, src: HDC, sx: i32, sy: i32, rop: u32) -> BOOL;
+    pub fn DeleteDC(hdc: HDC) -> BOOL;
 }
 
 #[cfg_attr(windows, link(name = "kernel32"))]
 extern "system" {
     pub fn GetModuleHandleW(name: *const u16) -> HINSTANCE;
+    pub fn GlobalAlloc(flags: u32, bytes: usize) -> HANDLE;
+    pub fn GlobalLock(mem: HANDLE) -> *mut c_void;
+    pub fn GlobalUnlock(mem: HANDLE) -> BOOL;
+    pub fn GlobalFree(mem: HANDLE) -> HANDLE;
 }
 
 #[cfg_attr(windows, link(name = "comctl32"))]
@@ -393,6 +428,80 @@ pub fn chord_from_msg(wp: WPARAM, lp: LPARAM) -> tn3270_keymap::KeyChord {
         tn3270_keymap::KeyChord::from_win32(
             wp as u16, lp, down(VK_SHIFT), down(VK_CONTROL), down(VK_MENU),
         )
+    }
+}
+
+/// Read a window's text (e.g. an edit box).
+pub fn window_text(hwnd: HWND) -> String {
+    unsafe {
+        let len = GetWindowTextLengthW(hwnd).max(0) as usize;
+        let mut buf = vec![0u16; len + 1];
+        let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+        String::from_utf16_lossy(&buf[..n])
+    }
+}
+
+/// Size and centre a popup over `owner`; returns (x, y, w, h).
+pub fn centered(owner: HWND, client_w: i32, client_h: i32, style: u32, ex: u32) -> (i32, i32, i32, i32) {
+    unsafe {
+        let mut rc = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
+        AdjustWindowRectEx(&mut rc, style, 0, ex);
+        let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+        let mut orc = RECT::default();
+        GetWindowRect(owner, &mut orc);
+        let x = orc.left + ((orc.right - orc.left) - w) / 2;
+        let y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+        (x, y.max(0), w, h)
+    }
+}
+
+/// Put text on the clipboard.
+pub fn set_clipboard(owner: HWND, text: &str) -> bool {
+    let w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        let mem = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2);
+        let mut ok = false;
+        if !mem.is_null() {
+            let p = GlobalLock(mem) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
+                GlobalUnlock(mem);
+                ok = !SetClipboardData(CF_UNICODETEXT, mem).is_null();
+            }
+            if !ok {
+                GlobalFree(mem);
+            }
+        }
+        CloseClipboard();
+        ok
+    }
+}
+
+/// Text on the clipboard, if any.
+pub fn get_clipboard(owner: HWND) -> Option<String> {
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return None;
+        }
+        let mem = GetClipboardData(CF_UNICODETEXT);
+        let mut out = None;
+        if !mem.is_null() {
+            let p = GlobalLock(mem) as *const u16;
+            if !p.is_null() {
+                let mut n = 0;
+                while *p.add(n) != 0 {
+                    n += 1;
+                }
+                out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+                GlobalUnlock(mem);
+            }
+        }
+        CloseClipboard();
+        out
     }
 }
 

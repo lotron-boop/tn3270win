@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "tn3270"
+version = "0.1.0"
+
+[[package]]
 name = "tn3270-keymap"
 version = "0.1.0"
 
@@ -10,5 +14,6 @@ version = "0.1.0"
 name = "tn3270win"
 version = "0.1.0"
 dependencies = [
+ "tn3270",
  "tn3270-keymap",
 ]

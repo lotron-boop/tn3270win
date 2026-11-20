@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/keymap", "app"]
+members = ["crates/keymap", "crates/tn3270", "app"]
 
 [workspace.package]
 version = "0.1.0"
