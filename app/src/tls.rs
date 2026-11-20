@@ -487,6 +487,10 @@ impl Transport for TlsStream {
         }
     }
 
+    fn set_read_timeout(&mut self, t: Option<std::time::Duration>) -> io::Result<()> {
+        self.tcp.set_read_timeout(t)
+    }
+
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         let (h, t) = (self.sizes.cbHeader as usize, self.sizes.cbTrailer as usize);
         let max = (self.sizes.cbMaximumMessage as usize).max(1);

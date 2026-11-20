@@ -21,6 +21,10 @@ pub trait Transport: Send {
     /// `WouldBlock` without losing buffered data.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
+    /// Set the read timeout on the socket this transport reads from. (On
+    /// Windows each cloned socket handle has its own timeout, so it must be
+    /// the very handle used for reading.)
+    fn set_read_timeout(&mut self, t: Option<Duration>) -> io::Result<()>;
 }
 
 impl Transport for TcpStream {
@@ -29,6 +33,9 @@ impl Transport for TcpStream {
     }
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         Write::write_all(self, data)
+    }
+    fn set_read_timeout(&mut self, t: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, t)
     }
 }
 
@@ -114,13 +121,12 @@ impl Connection {
                 Err(e) => return send(NetEvent::Closed(closed(e))),
             };
             let _ = stream.set_nodelay(true); // keystrokes go out immediately
-            // Extra handles to the same socket: one to set the read timeout
-            // after the handshake, one for close() to shut it down.
-            let (ctl, shut) = match (stream.try_clone(), stream.try_clone()) {
-                (Ok(c), Ok(s)) => (c, s),
-                (Err(e), _) | (_, Err(e)) => return send(NetEvent::Closed(closed(e.to_string()))),
-            };
-            *sock.lock().unwrap() = Some(shut);
+            // A second handle to the socket, so close() can shut it down
+            // while this thread is reading.
+            match stream.try_clone() {
+                Ok(shut) => *sock.lock().unwrap() = Some(shut),
+                Err(e) => return send(NetEvent::Closed(closed(e.to_string()))),
+            }
             send(NetEvent::Connected);
 
             let mut transport: Box<dyn Transport> = match wrapper {
@@ -130,7 +136,8 @@ impl Connection {
                 },
                 None => Box::new(stream),
             };
-            if ctl.set_read_timeout(Some(POLL)).is_err() {
+            // Reads wake up regularly so queued writes go out promptly.
+            if transport.set_read_timeout(Some(POLL)).is_err() {
                 return send(NetEvent::Closed(closed("could not set socket timeout".into())));
             }
 
@@ -288,6 +295,9 @@ mod tests {
         fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
             let x: Vec<u8> = data.iter().map(|b| b ^ 0x5A).collect();
             Write::write_all(&mut self.0, &x)
+        }
+        fn set_read_timeout(&mut self, t: Option<Duration>) -> io::Result<()> {
+            self.0.set_read_timeout(t)
         }
     }
 

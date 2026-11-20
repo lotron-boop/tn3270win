@@ -65,6 +65,8 @@ struct App {
     host_label: String,
     /// "TLS" once the connection is encrypted.
     security: Option<String>,
+    /// This connection was asked to use TLS.
+    tls_requested: bool,
     /// The session's keyboard preset, used instead of `keymap` while connected.
     session_keymap: Option<Keymap>,
     // Selection (Edit > Select Text)
@@ -187,6 +189,7 @@ unsafe fn run() {
             status: "Not connected".into(),
             host_label: String::new(),
             security: None,
+            tls_requested: false,
             session_keymap: None,
             select_mode: false,
             selection: None,
@@ -301,6 +304,7 @@ fn connect(hwnd: HWND) {
         a.clear_selection();
         a.host_label = format!("{}:{}", cfg.host, cfg.port);
         a.security = None;
+        a.tls_requested = cfg.tls;
         a.status = format!("Connecting to {}...", a.host_label);
     });
     unsafe { SetWindowTextW(hwnd, wide(&format!("tn3270win - {title}")).as_ptr()) };
@@ -341,10 +345,16 @@ fn on_net(hwnd: HWND) {
     with_app(|a| {
         while let Some(ev) = a.conn.as_ref().and_then(|c| c.try_recv()) {
             match ev {
-                NetEvent::Connected => a.status = format!("Connected to {}, negotiating...", a.host_label),
+                NetEvent::Connected => {
+                    a.status = if a.tls_requested {
+                        format!("Connected to {}, starting TLS...", a.host_label)
+                    } else {
+                        format!("Connected to {}, negotiating 3270...", a.host_label)
+                    };
+                }
                 NetEvent::Secured(how) => {
+                    a.status = format!("{how} established, negotiating 3270...");
                     a.security = Some(how);
-                    a.status = format!("Connected to {}, negotiating...", a.host_label);
                 }
                 NetEvent::Prompt(p) => {
                     a.status = "Waiting for you to check the host's certificate...".into();
