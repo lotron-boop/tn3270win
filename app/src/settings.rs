@@ -54,13 +54,15 @@ pub struct SessionConfig {
     pub model: u8,
     /// Keyboard preset to use; empty = the current keyboard map.
     pub keymap: String,
+    /// Encrypt the connection with TLS.
+    pub tls: bool,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         SessionConfig {
             name: String::new(), host: String::new(), port: 23, lu: String::new(),
-            codepage: 37, model: 2, keymap: String::new(),
+            codepage: 37, model: 2, keymap: String::new(), tls: false,
         }
     }
 }
@@ -68,8 +70,8 @@ impl Default for SessionConfig {
 impl SessionConfig {
     pub fn to_text(&self) -> String {
         format!(
-            "# tn3270win session\nname = {}\nhost = {}\nport = {}\nlu = {}\ncodepage = {}\nmodel = {}\nkeymap = {}\n",
-            self.name, self.host, self.port, self.lu, self.codepage, self.model, self.keymap
+            "# tn3270win session\nname = {}\nhost = {}\nport = {}\ntls = {}\nlu = {}\ncodepage = {}\nmodel = {}\nkeymap = {}\n",
+            self.name, self.host, self.port, self.tls as u8, self.lu, self.codepage, self.model, self.keymap
         )
     }
 
@@ -86,6 +88,7 @@ impl SessionConfig {
                 "codepage" => cfg.codepage = v.parse().unwrap_or(37),
                 "model" => cfg.model = v.parse().ok().filter(|m| (2..=5).contains(m)).unwrap_or(2),
                 "keymap" => cfg.keymap = v.to_string(),
+                "tls" => cfg.tls = v == "1" || v.eq_ignore_ascii_case("yes"),
                 _ => {}
             }
         }
@@ -175,6 +178,53 @@ impl SessionStore {
     }
 }
 
+/// Certificates the user chose to trust: %APPDATA%\tn3270win\trusted_certs.ini,
+/// one `host:port = SHA-256 fingerprint` line each.
+fn trusted_path() -> PathBuf {
+    app_dir().join("trusted_certs.ini")
+}
+
+fn trusted_key(host: &str, port: u16) -> String {
+    format!("{}:{port}", host.trim().to_lowercase())
+}
+
+fn read_trusted(path: &std::path::Path) -> Vec<(String, String)> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(" = "))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
+pub fn trusted_fingerprint(host: &str, port: u16) -> Option<String> {
+    trusted_in(&trusted_path(), host, port)
+}
+
+fn trusted_in(path: &std::path::Path, host: &str, port: u16) -> Option<String> {
+    let key = trusted_key(host, port);
+    read_trusted(path).into_iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+}
+
+/// Remember `fingerprint` as trusted for host:port (replacing an older one).
+pub fn trust_fingerprint(host: &str, port: u16, fingerprint: &str) -> std::io::Result<()> {
+    trust_in(&trusted_path(), host, port, fingerprint)
+}
+
+fn trust_in(path: &std::path::Path, host: &str, port: u16, fingerprint: &str) -> std::io::Result<()> {
+    let key = trusted_key(host, port);
+    let mut entries: Vec<(String, String)> = read_trusted(path).into_iter().filter(|(k, _)| *k != key).collect();
+    entries.push((key, fingerprint.to_string()));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut text = String::from("# Certificates trusted in tn3270win: host:port = SHA-256 fingerprint\n");
+    for (k, v) in entries {
+        text.push_str(&format!("{k} = {v}\n"));
+    }
+    std::fs::write(path, text)
+}
+
 /// View settings: View > Fit Font to Window, Larger/Smaller Font.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewConfig {
@@ -219,10 +269,24 @@ mod tests {
     fn session_text_round_trip() {
         let cfg = SessionConfig {
             name: "TK5 at home".into(), host: "192.168.2.7".into(), port: 3270, lu: "CUU0C0".into(),
-            codepage: 1140, model: 4, keymap: "My keys".into(),
+            codepage: 1140, model: 4, keymap: "My keys".into(), tls: true,
         };
         assert_eq!(SessionConfig::from_text(&cfg.to_text()), cfg);
         assert_eq!(SessionConfig::from_text("model = 9").model, 2);
+    }
+
+    #[test]
+    fn trusted_certificates() {
+        let path = std::env::temp_dir().join(format!("tn3270win-trust-{}.ini", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(trusted_in(&path, "192.168.2.7", 992), None);
+        trust_in(&path, "192.168.2.7", 992, "AA:BB").unwrap();
+        trust_in(&path, "Other.Host", 992, "CC").unwrap();
+        trust_in(&path, "192.168.2.7", 992, "DD:EE").unwrap(); // regenerated cert
+        assert_eq!(trusted_in(&path, "192.168.2.7", 992).as_deref(), Some("DD:EE"));
+        assert_eq!(trusted_in(&path, "other.host", 992).as_deref(), Some("CC"));
+        assert_eq!(trusted_in(&path, "192.168.2.7", 993), None);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

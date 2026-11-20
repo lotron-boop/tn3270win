@@ -4,7 +4,27 @@ A TN3270 terminal emulator for Windows, written in Rust, with a native Win32
 interface: a real menu bar, standard dialogs and keyboard navigation. The
 first priority is keyboard mapping.
 
-## Status: milestone 3, sessions, selection and screen sizes
+## Status: milestone 4, TLS encryption
+
+- **Use TLS encryption** checkbox in Communication > Connect... (ticking it
+  changes port 23 to 992). Saved with the session.
+- Uses Windows' own TLS (Schannel): no extra libraries. Direct TLS from the
+  first byte, as used by port 992 on z/OS and by stunnel in front of
+  Hercules. TLS 1.2.
+- Certificates signed by an authority Windows trusts are accepted silently
+  (chain, expiry and host name are checked).
+- Self-signed or otherwise untrusted certificates: tn3270win shows who the
+  certificate is for, its expiry and its SHA-256 fingerprint, and asks:
+  **Yes** = trust from now on, **No** = this time only, **Cancel**. Trusted
+  fingerprints are kept per host and port in
+  `%APPDATA%\tn3270win\trusted_certs.ini`; if a host's certificate
+  changes later, you get a warning before connecting.
+- The status line starts with **TLS** when the connection is encrypted.
+
+Not yet: TLS negotiated inside Telnet (STARTTLS), TLS 1.3, client
+certificates.
+
+## Milestone 3: sessions, selection and screen sizes
 
 - **Saved sessions**: in Communication > Connect..., fill in the fields and
   click **Save As...** to store them under a name; pick a name from the
@@ -15,7 +35,8 @@ first priority is keyboard mapping.
   with Erase/Write Alternate (ISPF does this).
 - **Select text**: Edit > Select Text, drag a box with the mouse, then
   Edit > Copy (or your Copy key). Without Select Text, a click still places
-  the cursor. Copy with nothing selected copies the whole screen.
+  the cursor. Copy with nothing selected copies the whole screen;
+  Edit > Copy Screen always copies the whole screen.
 - **View menu**: Fit Font to Window (on by default: the screen scales with
   the window), Larger Font and Smaller Font for a fixed size.
 
@@ -35,8 +56,7 @@ first priority is keyboard mapping.
 - Edit > Copy Screen and Paste (paste types into the fields).
 - The screen font resizes with the window.
 
-Not yet: encrypted connections (TLS), SysReq, printing, file transfer,
-macros.
+Not yet: SysReq, printing, file transfer, macros.
 
 ## Milestone 1: keyboard mapping
 
@@ -100,6 +120,7 @@ the Actions tab, artifact `tn3270win-windows-x64`).
 | `crates/keymap` | Platform-independent keyboard model: key chords, 3270 actions, presets, `.kmp` format, key-event dispatcher. Fully unit-tested. |
 | `app/src/main.rs` | Main window, menus, screen drawing, keys |
 | `app/src/connectdlg.rs` | Connect dialog |
+| `app/src/tls.rs` | TLS client on Windows Schannel, certificate checks |
 | `app/src/keydlg.rs` | Keyboard Setup dialog |
 | `app/src/capture.rs` | "Press a key" capture control |
 | `app/src/prompt.rs` | Small "enter a name" dialog |
@@ -110,7 +131,8 @@ the Actions tab, artifact `tn3270win-windows-x64`).
 1. **Keyboard mapping**. Later: a
    "show all keys" view, keyboard-picture view.
 2. **3270 engine and live sessions**.
-3. **Sessions, selection, screen sizes, view settings** (this milestone).
-   Later: appearance settings (fonts, colours), TLS.
-4. **Productivity**: macros, hotspots, IND$FILE file transfer, printing,
+3. **Sessions, selection, screen sizes, view settings**. Later: appearance
+   settings (fonts, colours).
+4. **TLS** (this milestone). Later: STARTTLS, TLS 1.3, client certificates.
+5. **Productivity**: macros, hotspots, IND$FILE file transfer, printing,
    multiple sessions.

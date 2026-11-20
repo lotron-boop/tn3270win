@@ -14,11 +14,12 @@ mod connectdlg;
 mod keydlg;
 mod prompt;
 mod settings;
+mod tls;
 mod win32;
 
 use std::cell::RefCell;
 
-use tn3270::net::{Connection, NetEvent};
+use tn3270::net::{Connection, NetEvent, TrustAnswer, TrustPrompt};
 use tn3270::screen::{Aid, Color, InputError, Lock};
 use tn3270::{CodePage, Model, Session, SessionState};
 use tn3270_keymap::{Action, KeyDispatcher, Keymap, Preset};
@@ -31,6 +32,7 @@ const ID_EXIT: usize = 100;
 const ID_COPY: usize = 110;
 const ID_PASTE: usize = 111;
 const ID_SELECT: usize = 112;
+const ID_COPY_SCREEN: usize = 113;
 const ID_FIT: usize = 300;
 const ID_LARGER: usize = 301;
 const ID_SMALLER: usize = 302;
@@ -61,6 +63,8 @@ struct App {
     conn: Option<Connection>,
     status: String,
     host_label: String,
+    /// "TLS" once the connection is encrypted.
+    security: Option<String>,
     /// The session's keyboard preset, used instead of `keymap` while connected.
     session_keymap: Option<Keymap>,
     // Selection (Edit > Select Text)
@@ -182,6 +186,7 @@ unsafe fn run() {
             conn: None,
             status: "Not connected".into(),
             host_label: String::new(),
+            security: None,
             session_keymap: None,
             select_mode: false,
             selection: None,
@@ -232,6 +237,7 @@ unsafe fn build_menu() -> HMENU {
         (ID_SELECT, "&Select Text", true),
         (0, "", true),
         (ID_COPY, "&Copy", true),
+        (ID_COPY_SCREEN, "Copy Scree&n", true),
         (ID_PASTE, "&Paste", true),
     ]);
     popup("&View", &[
@@ -282,7 +288,8 @@ fn connect(hwnd: HWND) {
     };
 
     let notify_hwnd = hwnd as isize;
-    let conn = Connection::open(&cfg.host, cfg.port, move || unsafe {
+    let wrapper = cfg.tls.then(|| tls::wrapper(cfg.host.clone(), cfg.port));
+    let conn = Connection::open_with(&cfg.host, cfg.port, wrapper, move || unsafe {
         PostMessageW(notify_hwnd as HWND, WM_APP_NET, 0, 0);
     });
     let title = if cfg.name.is_empty() { cfg.host.clone() } else { cfg.name.clone() };
@@ -293,6 +300,7 @@ fn connect(hwnd: HWND) {
         a.dispatcher.cancel();
         a.clear_selection();
         a.host_label = format!("{}:{}", cfg.host, cfg.port);
+        a.security = None;
         a.status = format!("Connecting to {}...", a.host_label);
     });
     unsafe { SetWindowTextW(hwnd, wide(&format!("tn3270win - {title}")).as_ptr()) };
@@ -307,6 +315,7 @@ fn disconnect(hwnd: HWND, status: String) {
         }
         a.session = None;
         a.session_keymap = None;
+        a.security = None;
         a.dispatcher.cancel();
         a.clear_selection();
         a.status = status;
@@ -328,15 +337,27 @@ fn flush(a: &mut App) {
 fn on_net(hwnd: HWND) {
     let mut closed: Option<Option<String>> = None;
     let mut beep = false;
+    let mut prompt: Option<TrustPrompt> = None;
     with_app(|a| {
         while let Some(ev) = a.conn.as_ref().and_then(|c| c.try_recv()) {
             match ev {
                 NetEvent::Connected => a.status = format!("Connected to {}, negotiating...", a.host_label),
+                NetEvent::Secured(how) => {
+                    a.security = Some(how);
+                    a.status = format!("Connected to {}, negotiating...", a.host_label);
+                }
+                NetEvent::Prompt(p) => {
+                    a.status = "Waiting for you to check the host's certificate...".into();
+                    prompt = Some(p);
+                    break; // ask outside this borrow
+                }
                 NetEvent::Data(d) => {
                     if let Some(s) = a.session.as_mut() {
                         s.receive(&d);
                         if let SessionState::Ready { tn3270e, device_type, lu } = &s.state {
-                            a.status = format!("{} {}{}", if *tn3270e { "TN3270E" } else { "TN3270" },
+                            a.status = format!("{}{} {}{}",
+                                a.security.as_deref().map(|t| format!("{t} ")).unwrap_or_default(),
+                                if *tn3270e { "TN3270E" } else { "TN3270" },
                                 device_type, lu.as_ref().map(|l| format!("  LU {l}")).unwrap_or_default());
                         }
                         beep |= std::mem::take(&mut s.screen.alarm);
@@ -353,6 +374,12 @@ fn on_net(hwnd: HWND) {
     if beep {
         unsafe { MessageBeep(MB_BEEP) };
     }
+    if let Some(p) = prompt {
+        let answer = ask_trust(hwnd, &p);
+        let _ = p.reply.send(answer);
+        invalidate(hwnd);
+        return;
+    }
     // Erase/Write Alternate may have changed the screen size.
     if with_app(|a| a.dims() != a.fitted_dims).unwrap_or(false) {
         fit_font(hwnd);
@@ -364,6 +391,29 @@ fn on_net(hwnd: HWND) {
             message_box(hwnd, &err, "Connect", MB_OK | MB_ICONWARNING);
         }
         None => invalidate(hwnd),
+    }
+}
+
+/// Ask whether to trust a certificate Windows doesn't.
+fn ask_trust(hwnd: HWND, p: &TrustPrompt) -> TrustAnswer {
+    let headline = if p.changed {
+        format!("WARNING: the certificate for {}:{} has CHANGED since you last trusted it.\n\n\
+            If you didn't replace the host's certificate yourself, someone may be \
+            intercepting the connection. Don't connect unless you know why it changed.", p.host, p.port)
+    } else {
+        format!("Windows doesn't trust the certificate from {}:{}.", p.host, p.port)
+    };
+    let text = format!(
+        "{headline}\n\n{}\n\nIssued to:\t{}\nIssued by:\t{}\nExpires:\t{}\n\nSHA-256 fingerprint:\n{}\n\n\
+        To check it, run this on the host and compare:\n\
+        openssl x509 -in tk5-cert.pem -noout -fingerprint -sha256\n\n\
+        Yes = trust this certificate from now on\nNo = connect this time only\nCancel = don't connect",
+        p.problem, p.subject, p.issuer, p.expires, p.fingerprint);
+    let icon = if p.changed { MB_ICONWARNING } else { MB_ICONQUESTION };
+    match message_box(hwnd, &text, "Check Host Certificate", MB_YESNOCANCEL | icon | MB_DEFBUTTON3) {
+        IDYES => TrustAnswer::Always,
+        IDNO => TrustAnswer::Once,
+        _ => TrustAnswer::Reject,
     }
 }
 
@@ -619,6 +669,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 let check = |id: usize, yes: bool| CheckMenuItem(menu, id as u32, MF_BYCOMMAND | if yes { MF_CHECKED } else { MF_UNCHECKED });
                 enable(ID_DISCONNECT, on);
                 enable(ID_SELECT, on);
+                enable(ID_COPY_SCREEN, on);
                 check(ID_SELECT, select);
                 check(ID_FIT, fit);
             }
@@ -632,6 +683,13 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 ID_COPY => {
                     with_app(copy);
                     invalidate(hwnd);
+                }
+                ID_COPY_SCREEN => {
+                    with_app(|a| {
+                        if let Some(s) = a.session.as_ref() {
+                            set_clipboard(hwnd, &s.screen.text());
+                        }
+                    });
                 }
                 ID_SELECT => {
                     with_app(|a| {

@@ -23,6 +23,10 @@ const IDC_MODEL: i32 = 3005;
 const IDC_KEYMAP: i32 = 3006;
 const IDC_SAVE_AS: i32 = 3007;
 const IDC_DELETE: i32 = 3008;
+const IDC_TLS: i32 = 3009;
+const BS_AUTOCHECKBOX: u32 = 3;
+const BM_GETCHECK: u32 = 0x00F0;
+const BM_SETCHECK: u32 = 0x00F1;
 const CBN_SELCHANGE: u16 = 1;
 const NEW_SESSION: &str = "(New session)";
 const CURRENT_KEYMAP: &str = "(Current keyboard map)";
@@ -33,6 +37,7 @@ struct Controls {
     session: HWND,
     host: HWND,
     port: HWND,
+    tls: HWND,
     lu: HWND,
     codepage: HWND,
     model: HWND,
@@ -107,7 +112,8 @@ pub fn run(owner: HWND, last: &SessionConfig) -> Option<SessionConfig> {
         let host = edit(68, 312, IDC_HOST, 0);
         label("&Port:", 24, 100, 96);
         let port = edit(100, 70, IDC_PORT, ES_NUMBER);
-        child(dlg, "STATIC", "(23 is the usual unencrypted port)", SS_LEFT, 0, (202, 103, 236, 20), -1, font);
+        let tls = child(dlg, "BUTTON", "Use &TLS encryption", BS_AUTOCHECKBOX | WS_TABSTOP, 0,
+            (210, 100, 220, 24), IDC_TLS, font);
         label("&LU name:", 24, 132, 96);
         let lu = edit(132, 140, IDC_LU, 0);
         child(dlg, "STATIC", "(optional)", SS_LEFT, 0, (272, 135, 100, 20), -1, font);
@@ -135,7 +141,7 @@ pub fn run(owner: HWND, last: &SessionConfig) -> Option<SessionConfig> {
         button("Cancel", (372, 288, 76, 26), IDCANCEL, BS_PUSHBUTTON);
 
         CTRLS.with(|c| *c.borrow_mut() = Some(Controls {
-            owner, session, host, port, lu, codepage, model, keymap, delete, names: Vec::new(), keymaps,
+            owner, session, host, port, tls, lu, codepage, model, keymap, delete, names: Vec::new(), keymaps,
         }));
         with_ctrls(|c| {
             fill_sessions(c, &last.name);
@@ -192,6 +198,7 @@ fn fill_fields(c: &Controls, cfg: &SessionConfig) {
     unsafe {
         SetWindowTextW(c.host, wide(&cfg.host).as_ptr());
         SetWindowTextW(c.port, wide(&cfg.port.to_string()).as_ptr());
+        SendMessageW(c.tls, BM_SETCHECK, cfg.tls as usize, 0);
         SetWindowTextW(c.lu, wide(&cfg.lu).as_ptr());
         let cp = CodePage::ALL.iter().position(|p| p.number() == cfg.codepage).unwrap_or(0);
         SendMessageW(c.codepage, CB_SETCURSEL, cp, 0);
@@ -210,6 +217,7 @@ fn read_fields(dlg: HWND) -> Option<SessionConfig> {
             host: window_text(c.host).trim().to_string(),
             port: 0,
             lu: window_text(c.lu).trim().to_uppercase(),
+            tls: unsafe { SendMessageW(c.tls, BM_GETCHECK, 0, 0) } == 1,
             codepage: CodePage::ALL.get(combo_sel(c.codepage)).copied().unwrap_or_default().number(),
             model: Model::ALL.get(combo_sel(c.model)).copied().unwrap_or_default().number(),
             keymap: c.keymaps.get(combo_sel(c.keymap)).cloned().unwrap_or_default(),
@@ -237,6 +245,22 @@ fn on_session_changed() {
             if let Some(cfg) = settings::sessions().list().into_iter().find(|s| s.name == name) {
                 fill_fields(c, &cfg);
             }
+        }
+    });
+}
+
+/// Ticking TLS moves the port between the usual 23 and 992.
+fn on_tls_clicked() {
+    with_ctrls(|c| {
+        let on = unsafe { SendMessageW(c.tls, BM_GETCHECK, 0, 0) } == 1;
+        let port = window_text(c.port);
+        let new_port = match (on, port.trim()) {
+            (true, "23") | (true, "") => Some("992"),
+            (false, "992") => Some("23"),
+            _ => None,
+        };
+        if let Some(p) = new_port {
+            unsafe { SetWindowTextW(c.port, wide(p).as_ptr()) };
         }
     });
 }
@@ -311,6 +335,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 (IDC_SESSION, CBN_SELCHANGE) => on_session_changed(),
                 (IDC_SAVE_AS, BN_CLICKED) => on_save_as(hwnd),
                 (IDC_DELETE, BN_CLICKED) => on_delete(hwnd),
+                (IDC_TLS, BN_CLICKED) => on_tls_clicked(),
                 _ => {}
             }
             0

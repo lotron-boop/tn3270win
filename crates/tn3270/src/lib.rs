@@ -16,6 +16,7 @@ pub mod net;
 pub mod query;
 pub mod screen;
 pub mod session;
+pub mod sha256;
 pub mod telnet;
 
 pub use ebcdic::CodePage;

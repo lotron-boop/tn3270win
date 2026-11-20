@@ -256,6 +256,9 @@ pub const MF_SEPARATOR: u32 = 0x0800;
 // Message boxes
 pub const MB_OK: u32 = 0x0000;
 pub const MB_YESNO: u32 = 0x0004;
+pub const MB_YESNOCANCEL: u32 = 0x0003;
+pub const MB_DEFBUTTON3: u32 = 0x0200;
+pub const IDNO: i32 = 7;
 pub const MB_ICONERROR: u32 = 0x0010;
 pub const MB_ICONQUESTION: u32 = 0x0020;
 pub const MB_ICONWARNING: u32 = 0x0030;
