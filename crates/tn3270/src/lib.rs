@@ -19,5 +19,5 @@ pub mod session;
 pub mod telnet;
 
 pub use ebcdic::CodePage;
-pub use screen::{Aid, Color, InputError, Screen};
+pub use screen::{Aid, Color, InputError, Model, Screen};
 pub use session::{Session, SessionState};

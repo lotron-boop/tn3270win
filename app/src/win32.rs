@@ -203,6 +203,13 @@ pub const GMEM_MOVEABLE: u32 = 0x0002;
 pub const MF_BYCOMMAND: u32 = 0x0000;
 pub const MF_ENABLED: u32 = 0x0000;
 pub const MB_BEEP: u32 = 0xFFFF_FFFF;
+pub const MF_CHECKED: u32 = 0x0008;
+pub const MF_UNCHECKED: u32 = 0x0000;
+pub const WM_SETCURSOR: u32 = 0x0020;
+pub const WM_MOUSEMOVE: u32 = 0x0200;
+pub const WM_LBUTTONUP: u32 = 0x0202;
+pub const HTCLIENT: u16 = 1;
+pub const IDC_CROSS: *const u16 = 32515 as *const u16;
 pub const DLGC_WANTALLKEYS: LRESULT = 0x0004;
 pub const DLGC_WANTCHARS: LRESULT = 0x0080;
 
@@ -322,6 +329,10 @@ extern "system" {
     pub fn InvertRect(hdc: HDC, rect: *const RECT) -> BOOL;
     pub fn MessageBeep(kind: u32) -> BOOL;
     pub fn EnableMenuItem(menu: HMENU, id: u32, flags: u32) -> BOOL;
+    pub fn CheckMenuItem(menu: HMENU, id: u32, flags: u32) -> u32;
+    pub fn SetCapture(hwnd: HWND) -> HWND;
+    pub fn ReleaseCapture() -> BOOL;
+    pub fn SetCursor(cursor: HCURSOR) -> HCURSOR;
     pub fn OpenClipboard(owner: HWND) -> BOOL;
     pub fn CloseClipboard() -> BOOL;
     pub fn EmptyClipboard() -> BOOL;

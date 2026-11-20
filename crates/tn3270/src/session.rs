@@ -3,7 +3,7 @@
 use crate::codes::*;
 use crate::ebcdic::CodePage;
 use crate::query::query_reply;
-use crate::screen::{Aid, InputError, Screen};
+use crate::screen::{Aid, InputError, Model, Screen};
 use crate::telnet::{Event, Telnet, DT_3270_DATA, DT_SSCP_LU_DATA};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,15 +23,15 @@ pub struct Session {
     pub dirty: bool,
 }
 
-/// Model 2: 24 x 80.
-pub const ROWS: usize = 24;
-pub const COLS: usize = 80;
-
 impl Session {
     pub fn new(codepage: CodePage, lu: Option<String>) -> Session {
+        Session::with_model(Model::M2, codepage, lu)
+    }
+
+    pub fn with_model(model: Model, codepage: CodePage, lu: Option<String>) -> Session {
         Session {
-            telnet: Telnet::new("IBM-3278-2-E", lu),
-            screen: Screen::new(ROWS, COLS, codepage),
+            telnet: Telnet::new(&model.terminal_type(), lu),
+            screen: Screen::for_model(model, codepage),
             state: SessionState::Negotiating,
             out: Vec::new(),
             dirty: true,
@@ -73,7 +73,10 @@ impl Session {
         let data = &rec[1..];
         match cmd {
             c if CMD_W.contains(&c) => self.screen.write(data, false),
-            c if CMD_EW.contains(&c) || CMD_EWA.contains(&c) => self.screen.write(data, true),
+            c if CMD_EW.contains(&c) || CMD_EWA.contains(&c) => {
+                self.screen.set_alternate(CMD_EWA.contains(&c));
+                self.screen.write(data, true);
+            }
             c if CMD_EAU.contains(&c) => self.screen.erase_all_unprotected(),
             c if CMD_RB.contains(&c) => {
                 let r = self.screen.read_buffer();
@@ -102,11 +105,14 @@ impl Session {
             match sf[2] {
                 // Read Partition: Query or Query List.
                 0x01 if sf.len() >= 5 && sf[3] == 0xFF && matches!(sf[4], 0x02 | 0x03) => {
-                    let q = query_reply(ROWS as u16, COLS as u16);
+                    let (r, c) = self.screen.alternate_size();
+                    let q = query_reply(r as u16, c as u16);
                     self.send_record(DT_3270_DATA, &q);
                 }
-                // Erase/Reset.
+                // Erase/Reset: flag 0x80 selects the alternate size.
                 0x03 => {
+                    let alt = sf.get(3).is_some_and(|f| f & 0x80 != 0);
+                    self.screen.set_alternate(alt);
                     self.screen.clear();
                 }
                 // Outbound 3270DS: partition, command, then write data.
@@ -116,6 +122,7 @@ impl Session {
                     if CMD_W.contains(&cmd) {
                         self.screen.write(body, false);
                     } else if CMD_EW.contains(&cmd) || CMD_EWA.contains(&cmd) {
+                        self.screen.set_alternate(CMD_EWA.contains(&cmd));
                         self.screen.write(body, true);
                     } else if CMD_EAU.contains(&cmd) {
                         self.screen.erase_all_unprotected();
@@ -193,6 +200,18 @@ mod tests {
         let out = s.take_output();
         assert_eq!(out.len(), 1 + 2 + 1920 + 2);
         assert_eq!(out[0], 0x60);
+    }
+
+    #[test]
+    fn model_4_terminal_type_and_query() {
+        let mut s = Session::with_model(Model::M4, CodePage::Cp037, None);
+        s.receive(&[IAC, DO, OPT_TTYPE, IAC, SB, OPT_TTYPE, 1, IAC, SE]);
+        let out = s.take_output();
+        assert!(out.windows(12).any(|w| w == b"IBM-3278-4-E"));
+        s.receive(&[IAC, DO, OPT_EOR, IAC, WILL, OPT_EOR, IAC, DO, OPT_BINARY, IAC, WILL, OPT_BINARY]);
+        s.take_output();
+        s.receive(&[0x7E, WCC_KEYBOARD_RESTORE, IAC, EOR]); // Erase/Write Alternate
+        assert_eq!((s.screen.rows, s.screen.cols), (43, 80));
     }
 
     #[test]

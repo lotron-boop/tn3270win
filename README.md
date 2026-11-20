@@ -4,7 +4,22 @@ A TN3270 terminal emulator for Windows, written in Rust, with a native Win32
 interface: a real menu bar, standard dialogs and keyboard navigation. The
 first priority is keyboard mapping.
 
-## Status: milestone 2, connecting to a host
+## Status: milestone 3, sessions, selection and screen sizes
+
+- **Saved sessions**: in Communication > Connect..., fill in the fields and
+  click **Save As...** to store them under a name; pick a name from the
+  Session box next time. Each session has its own screen size and, if you
+  like, its own keyboard preset. Stored in `%APPDATA%\tn3270win\sessions`.
+- **Screen sizes**: 24x80 (Model 2), 32x80 (Model 3), 43x80 (Model 4),
+  27x132 (Model 5). As on a real 3278, the host switches to the large size
+  with Erase/Write Alternate (ISPF does this).
+- **Select text**: Edit > Select Text, drag a box with the mouse, then
+  Edit > Copy (or your Copy key). Without Select Text, a click still places
+  the cursor. Copy with nothing selected copies the whole screen.
+- **View menu**: Fit Font to Window (on by default: the screen scales with
+  the window), Larger Font and Smaller Font for a fixed size.
+
+## Milestone 2: connecting to a host
 
 - **Communication > Connect...**: host name, port (23 by default), optional
   LU name, and code page (037 US/Canada by default; also 1140, 500, 273).
@@ -20,8 +35,8 @@ first priority is keyboard mapping.
 - Edit > Copy Screen and Paste (paste types into the fields).
 - The screen font resizes with the window.
 
-Not yet: encrypted connections (TLS), SysReq, selecting part of the screen,
-printing, file transfer, macros, other screen sizes.
+Not yet: encrypted connections (TLS), SysReq, printing, file transfer,
+macros.
 
 ## Milestone 1: keyboard mapping
 
@@ -92,9 +107,10 @@ the Actions tab, artifact `tn3270win-windows-x64`).
 
 ## Roadmap
 
-1. **Keyboard mapping** (this milestone). Later: per-session keymaps, a
+1. **Keyboard mapping**. Later: a
    "show all keys" view, keyboard-picture view.
-2. **3270 engine and live sessions** (this milestone). Next: saved session
-   profiles, TLS, screen sizes 3/4/5, selecting text to copy.
+2. **3270 engine and live sessions**.
+3. **Sessions, selection, screen sizes, view settings** (this milestone).
+   Later: appearance settings (fonts, colours), TLS.
 4. **Productivity**: macros, hotspots, IND$FILE file transfer, printing,
    multiple sessions.

@@ -137,9 +137,61 @@ pub struct Glyph {
     pub underline: bool,
 }
 
+/// IBM 3278 screen models.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Model {
+    #[default]
+    M2,
+    M3,
+    M4,
+    M5,
+}
+
+impl Model {
+    pub const ALL: [Model; 4] = [Model::M2, Model::M3, Model::M4, Model::M5];
+
+    pub fn number(self) -> u8 {
+        match self {
+            Model::M2 => 2,
+            Model::M3 => 3,
+            Model::M4 => 4,
+            Model::M5 => 5,
+        }
+    }
+
+    pub fn from_number(n: u8) -> Option<Model> {
+        Model::ALL.into_iter().find(|m| m.number() == n)
+    }
+
+    /// (rows, columns) of the model's alternate (full) size.
+    pub fn size(self) -> (usize, usize) {
+        match self {
+            Model::M2 => (24, 80),
+            Model::M3 => (32, 80),
+            Model::M4 => (43, 80),
+            Model::M5 => (27, 132),
+        }
+    }
+
+    pub fn label(self) -> String {
+        let (r, c) = self.size();
+        format!("{r} x {c} (Model {})", self.number())
+    }
+
+    /// Terminal type sent to the host, e.g. IBM-3278-4-E.
+    pub fn terminal_type(self) -> String {
+        format!("IBM-3278-{}-E", self.number())
+    }
+}
+
+/// Every model's default size: Erase/Write uses this, Erase/Write
+/// Alternate uses the model's own size.
+pub const DEFAULT_SIZE: (usize, usize) = (24, 80);
+
 pub struct Screen {
     pub rows: usize,
     pub cols: usize,
+    alternate: (usize, usize),
     cells: Vec<Cell>,
     pub cursor: usize,
     pub keyboard: Lock,
@@ -153,10 +205,12 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// A screen of one fixed size.
     pub fn new(rows: usize, cols: usize, codepage: CodePage) -> Screen {
         Screen {
             rows,
             cols,
+            alternate: (rows, cols),
             cells: vec![Cell::default(); rows * cols],
             cursor: 0,
             keyboard: Lock::Unlocked,
@@ -165,6 +219,31 @@ impl Screen {
             codepage,
             aid: Aid::NoAid,
             sscp_start: None,
+        }
+    }
+
+    /// A screen for a terminal model: starts at 24x80 and switches to the
+    /// model's size when the host sends Erase/Write Alternate.
+    pub fn for_model(model: Model, codepage: CodePage) -> Screen {
+        let (r, c) = DEFAULT_SIZE;
+        let mut s = Screen::new(r, c, codepage);
+        s.alternate = model.size();
+        s
+    }
+
+    pub fn alternate_size(&self) -> (usize, usize) {
+        self.alternate
+    }
+
+    /// Switch between the default and alternate size (clears the screen
+    /// when the size changes).
+    pub fn set_alternate(&mut self, alternate: bool) {
+        let (r, c) = if alternate { self.alternate } else { DEFAULT_SIZE.min(self.alternate) };
+        if (r, c) != (self.rows, self.cols) {
+            self.rows = r;
+            self.cols = c;
+            self.cells = vec![Cell::default(); r * c];
+            self.cursor = 0;
         }
     }
 
@@ -542,6 +621,7 @@ impl Screen {
             return Err(InputError::Locked);
         }
         if aid == Aid::Clear {
+            self.set_alternate(false);
             self.clear();
             self.sscp_start = None;
         }
@@ -1032,6 +1112,22 @@ mod tests {
             assert_eq!(*g, s.glyph(p), "position {p}");
         }
         assert!(s.text().starts_with(" USERID   ABC"));
+    }
+
+    #[test]
+    fn model_5_switches_size_on_ewa() {
+        let mut s = Screen::for_model(Model::M5, cp());
+        assert_eq!((s.rows, s.cols), (24, 80));
+        s.set_alternate(true);
+        assert_eq!((s.rows, s.cols, s.size()), (27, 132, 3564));
+        let mut d = vec![WCC_KEYBOARD_RESTORE, ORDER_SBA];
+        d.extend_from_slice(&encode_address(26 * 132 + 128));
+        d.extend(cp().encode("END"));
+        s.write(&d, true);
+        assert!(s.row_text(26).ends_with("END "));
+        s.keyboard = Lock::Unlocked;
+        s.press_aid(Aid::Clear).unwrap();
+        assert_eq!((s.rows, s.cols), (24, 80), "Clear returns to the default size");
     }
 
     #[test]
