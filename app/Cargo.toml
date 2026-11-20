@@ -1,0 +1,9 @@
+[package]
+name = "tn3270win"
+description = "TN3270 terminal emulator for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tn3270-keymap = { path = "../crates/keymap" }

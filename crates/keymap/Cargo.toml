@@ -1,0 +1,8 @@
+[package]
+name = "tn3270-keymap"
+description = "Keyboard mapping model for a TN3270 terminal emulator (platform-independent)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

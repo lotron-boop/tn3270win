@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/keymap", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lotron-boop/tn3270win"
+
+[profile.release]
+lto = true
+codegen-units = 1
