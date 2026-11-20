@@ -4,5 +4,6 @@ description = "Keyboard mapping model for a TN3270 terminal emulator (platform-i
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
